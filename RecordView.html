@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Codeforces 刷题记录分类查看器</title>
+    <!-- 引入 Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f8; padding: 20px; color: #333; }
         .container { max-width: 1200px; margin: 0 auto; }
@@ -13,16 +15,16 @@
         button:hover { background-color: #2b6cb0; }
         button:disabled { background-color: #ccc; cursor: not-allowed; }
         
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px; margin-bottom: 20px; }
         
         .card { background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); overflow: hidden; display: flex; flex-direction: column; max-height: 800px; }
         .card-header { padding: 15px; font-size: 1.2em; font-weight: bold; color: white; display: flex; justify-content: space-between; align-items: center; }
         
         /* 颜色区分 */
         .bg-gray { background-color: #718096; }   /* 800-1100 */
-        .bg-cyan { background-color: #0bc5ea; }   /* 1200-1600 (Cyan) */
-        .bg-blue { background-color: #4299e1; }   /* 1700-2100 (Blue/Violetish) */
-        .bg-orange { background-color: #ed8936; } /* 2200+ (Orange/Red) */
+        .bg-cyan { background-color: #0bc5ea; }   /* 1200-1600 */
+        .bg-blue { background-color: #4299e1; }   /* 1700-2100 */
+        .bg-orange { background-color: #ed8936; } /* 2200+ */
 
         .count-badge { background: rgba(0,0,0,0.2); padding: 2px 8px; border-radius: 12px; font-size: 0.8em; }
 
@@ -39,8 +41,17 @@
         .loading { text-align: center; margin: 20px; font-size: 1.2em; color: #666; display: none; }
         .error { color: #e53e3e; margin-top: 10px; display: none; }
         
-        /* 针对不同难度的行内颜色微调 */
         .rating-val { font-weight: bold; color: #555; }
+
+        /* 图表卡片样式 */
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            margin-top: 20px;
+            height: 400px;
+        }
     </style>
 </head>
 <body>
@@ -141,9 +152,16 @@
             </div>
         </div>
     </div>
+
+    <!-- 图表展示区域 -->
+    <div class="chart-container">
+        <canvas id="ratingChart"></canvas>
+    </div>
 </div>
 
 <script>
+    let myChart = null; // 全局变量，用于存储图表实例以便销毁和重绘
+
     async function fetchData() {
         const handle = document.getElementById('handleInput').value.trim();
         const loadingDiv = document.getElementById('loading');
@@ -155,19 +173,16 @@
             return;
         }
 
-        // 重置 UI
         loadingDiv.style.display = 'block';
         errorDiv.style.display = 'none';
         btn.disabled = true;
         
-        // 清空列表
         for(let i=1; i<=4; i++) {
             document.getElementById(`list-${i}`).innerHTML = '';
             document.getElementById(`count-${i}`).innerText = '0';
         }
 
         try {
-            // 获取数据
             const response = await fetch(`https://codeforces.com/api/user.status?handle=${handle}&from=1&count=10000`);
             const data = await response.json();
 
@@ -176,30 +191,18 @@
             }
 
             const submissions = data.result;
-            
-            // 使用 Map 进行去重，只保留每道题最后一次 Accepted 的记录
-            // Key: contestId + problemIndex (e.g., "1234A")
             const solvedMap = new Map();
 
             submissions.forEach(sub => {
-                // 1. 必须是 AC
-                // 2. 必须有 rating 信息 (gym 或未定级题目可能没有 rating)
                 if (sub.verdict === 'OK' && sub.problem.rating !== undefined) {
                     const problemId = sub.problem.contestId + sub.problem.index;
-                    
-                    // 因为 API 返回顺序通常是时间倒序（最新的在前），
-                    // 如果我们想保留"第一次AC"或"最后一次AC"，需要注意。
-                    // 这里我们保留列表里遇到的第一个（即最近的一次提交），因为通常包含最新的代码风格
                     if (!solvedMap.has(problemId)) {
                         solvedMap.set(problemId, sub);
                     }
                 }
             });
 
-            // 将 Map 转为数组并分类
             const solvedList = Array.from(solvedMap.values());
-            
-            // 准备四个容器
             const groups = [[], [], [], []];
 
             solvedList.forEach(sub => {
@@ -215,45 +218,31 @@
                 }
             });
 
-            // 渲染数据
+            // 渲染数据列表
             groups.forEach((group, index) => {
-                // 按提交时间排序 (最近的在上面)
                 group.sort((a, b) => b.creationTimeSeconds - a.creationTimeSeconds);
-                
                 const tbody = document.getElementById(`list-${index + 1}`);
                 document.getElementById(`count-${index + 1}`).innerText = group.length;
 
                 group.forEach(sub => {
                     const row = document.createElement('tr');
-                    
-                    // 时间转换
                     const date = new Date(sub.creationTimeSeconds * 1000);
                     const timeStr = date.toISOString().slice(0, 10) + ' ' + date.toLocaleTimeString();
-
-                    // 构建题目链接
                     const probUrl = `https://codeforces.com/contest/${sub.contestId}/problem/${sub.problem.index}`;
-                    
-                    // 构建提交代码链接
-                    // Gym 题目链接结构略有不同，但通常 contestId 够用
                     const subUrl = `https://codeforces.com/contest/${sub.contestId}/submission/${sub.id}`;
 
                     row.innerHTML = `
-                        <td>
-                            <a href="${probUrl}" target="_blank">
-                                ${sub.problem.contestId}${sub.problem.index} - ${sub.problem.name}
-                            </a>
-                        </td>
+                        <td><a href="${probUrl}" target="_blank">${sub.problem.contestId}${sub.problem.index} - ${sub.problem.name}</a></td>
                         <td><span class="rating-val">${sub.problem.rating}</span></td>
                         <td style="color:#666; font-size:0.85em;">${timeStr}</td>
-                        <td>
-                            <a href="${subUrl}" target="_blank" title="查看代码详情">
-                                🔗 查看
-                            </a>
-                        </td>
+                        <td><a href="${subUrl}" target="_blank" title="查看代码详情">🔗 查看</a></td>
                     `;
                     tbody.appendChild(row);
                 });
             });
+
+            // 更新柱状图
+            updateChart(groups.map(g => g.length));
 
         } catch (err) {
             errorDiv.innerText = "错误: " + err.message;
@@ -262,6 +251,59 @@
             loadingDiv.style.display = 'none';
             btn.disabled = false;
         }
+    }
+
+    function updateChart(counts) {
+        const ctx = document.getElementById('ratingChart').getContext('2d');
+        
+        // 如果图表已存在，先销毁，防止鼠标悬停时闪烁旧数据
+        if (myChart) {
+            myChart.destroy();
+        }
+
+        myChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['[800, 1100]', '[1200, 1600]', '[1700, 2100]', '[2200, +∞)'],
+                datasets: [{
+                    label: '刷题数量',
+                    data: counts,
+                    backgroundColor: [
+                        '#718096', // Newbie Gray
+                        '#0bc5ea', // Cyan
+                        '#4299e1', // Blue
+                        '#ed8936'  // Orange
+                    ],
+                    borderColor: [
+                        '#4a5568',
+                        '#09a6c7',
+                        '#3182ce',
+                        '#dd6b20'
+                    ],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    title: {
+                        display: true,
+                        text: '各分段刷题数量分布统计',
+                        font: { size: 16 }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            precision: 0 // 纵坐标显示整数
+                        }
+                    }
+                }
+            }
+        });
     }
 </script>
 
